@@ -51,8 +51,24 @@ class VideoAnalyzer:
         """Convert image to base64 string"""
         return base64.b64encode(path.read_bytes()).decode("utf-8")
 
-    def fetch_video(self, input_arg: str, run_dir: Path, skip_download: bool = False) -> Tuple[Path, Dict]:
-        """Download video if URL, copy if local file"""
+    def fetch_video(
+        self,
+        input_arg: str,
+        run_dir: Path,
+        skip_download: bool = False,
+        yt_extractor_args: Optional[str] = None,
+        cookies_file: Optional[str] = None,
+        cookies_from_browser: Optional[str] = None,
+        force_ipv4: bool = False,
+    ) -> Tuple[Path, Dict]:
+        """Download video if URL, copy if local file.
+
+        Parameters allow resilient yt-dlp behavior against YouTube bot checks:
+        - yt_extractor_args: e.g. "youtube:player_client=android"
+        - cookies_file: path to cookies.txt
+        - cookies_from_browser: e.g. "edge:Default" or "chrome:Default"
+        - force_ipv4: pass --force-ipv4 when networks misbehave on IPv6
+        """
         videos_dir = run_dir / "video"
         videos_dir.mkdir(parents=True, exist_ok=True)
         
@@ -62,20 +78,64 @@ class VideoAnalyzer:
         if self.is_url(input_arg) and not skip_download:
             logging.info(f"Starting download with yt-dlp: {input_arg}")
             outtmpl = str(videos_dir / "%(id)s_%(title).200B.%(ext)s")
-            cmd = [
-                self.ytdlp_bin,
-                "-S", "res,ext:mp4:m4a",
-                "-f", "bv*+ba/b",
-                "-o", outtmpl,
-                input_arg
-            ]
-            try:
-                logging.info(f"Running command: {' '.join(cmd)}")
-                subprocess.run(cmd, check=True)
-                logging.info("Download completed successfully")
-            except subprocess.CalledProcessError as e:
-                logging.error(f"Download failed with exit code {e.returncode}")
-                raise
+
+            # Build a base command with sensible defaults
+            def build_cmd(extra: Optional[List[str]] = None) -> List[str]:
+                base = [
+                    self.ytdlp_bin,
+                    "-S", "res,ext:mp4:m4a",
+                    "-f", "bv*+ba/b",
+                    "-o", outtmpl,
+                    "--no-part",
+                    "--no-mtime",
+                    "--sleep-interval", "1",
+                    "--max-sleep-interval", "3",
+                ]
+                if force_ipv4:
+                    base.append("--force-ipv4")
+                # Allow env override if arg not provided
+                eff_extractor_args = yt_extractor_args or os.environ.get("YT_EXTRACTOR_ARGS")
+                if eff_extractor_args:
+                    base.extend(["--extractor-args", eff_extractor_args])
+                if cookies_file:
+                    base.extend(["--cookies", cookies_file])
+                if cookies_from_browser:
+                    base.extend(["--cookies-from-browser", cookies_from_browser])
+                if extra:
+                    base.extend(extra)
+                base.append(input_arg)
+                return base
+
+            # Attempt 1: as-configured
+            attempts: List[Tuple[str, List[str]]] = [("default", [])]
+
+            # Fallbacks (only add if not already specified by caller/env)
+            eff_extractor_args = yt_extractor_args or os.environ.get("YT_EXTRACTOR_ARGS", "")
+            if "player_client=" not in eff_extractor_args:
+                attempts.append(("android-client", ["--extractor-args", "youtube:player_client=android"]))
+            if not cookies_from_browser:
+                # Try Edge Default on Windows as a non-invasive default
+                attempts.append(("edge-cookies", ["--cookies-from-browser", "edge:Default"]))
+            if not force_ipv4:
+                attempts.append(("force-ipv4", ["--force-ipv4"]))
+
+            last_error: Optional[subprocess.CalledProcessError] = None
+            for label, extra in attempts:
+                cmd = build_cmd(extra)
+                try:
+                    logging.info(f"yt-dlp attempt '{label}': {' '.join(cmd)}")
+                    subprocess.run(cmd, check=True)
+                    logging.info(f"Download completed successfully with attempt '{label}'")
+                    break
+                except subprocess.CalledProcessError as e:
+                    last_error = e
+                    logging.warning(f"Attempt '{label}' failed (exit {e.returncode}). Trying next fallback if available...")
+            else:
+                # Exhausted attempts
+                logging.error("All yt-dlp attempts failed. Consider supplying --cookies-from-browser or --cookies.")
+                if last_error:
+                    raise last_error
+                raise RuntimeError("yt-dlp failed with unknown error")
                 
             files = sorted(videos_dir.glob("*.mp4")) + sorted(videos_dir.glob("*.mkv")) + sorted(videos_dir.glob("*.webm"))
             if not files:
@@ -330,7 +390,11 @@ class VideoAnalyzer:
         skip_download: bool = False,
         keep_media: bool = False,
         frame_prompt: str = None,
-        audio_prompt: str = None
+        audio_prompt: str = None,
+        yt_extractor_args: Optional[str] = None,
+        cookies_file: Optional[str] = None,
+        cookies_from_browser: Optional[str] = None,
+        force_ipv4: bool = False,
     ) -> Tuple[Path, Path]:
         """Complete video analysis pipeline"""
         
@@ -357,7 +421,15 @@ Prefer correct casing. If audio is unclear, mark [inaudible]."""
         logging.info(f"Output directory: {output_dir}")
         
         # 1) Acquire video
-        video_path, meta = self.fetch_video(input_source, output_dir, skip_download)
+        video_path, meta = self.fetch_video(
+            input_arg=input_source,
+            run_dir=output_dir,
+            skip_download=skip_download,
+            yt_extractor_args=yt_extractor_args,
+            cookies_file=cookies_file,
+            cookies_from_browser=cookies_from_browser,
+            force_ipv4=force_ipv4,
+        )
 
         # 2) Extract audio
         audio_path = self.extract_audio(video_path, output_dir)

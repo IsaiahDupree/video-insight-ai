@@ -31,8 +31,13 @@ def cli(ctx, debug):
 @click.option('--transcribe-model', default='gpt-4o-mini-transcribe', help='Transcription model to use')
 @click.option('--skip-download', is_flag=True, help='Treat input as local file only')
 @click.option('--keep-media', is_flag=True, help='Keep temporary media files')
+@click.option('--yt-extractor-args', default=None, help='Pass to yt-dlp --extractor-args (e.g. "youtube:player_client=android")')
+@click.option('--cookies-file', default=None, help='Path to cookies.txt for yt-dlp')
+@click.option('--cookies-from-browser', default=None, help='Browser profile for yt-dlp cookies (e.g. "edge:Default", "chrome:Default")')
+@click.option('--force-ipv4', is_flag=True, help='Force IPv4 for yt-dlp')
 def analyze(video_input, output, interval, max_frames, audio_chunk_seconds, 
-           vision_model, transcribe_model, skip_download, keep_media):
+           vision_model, transcribe_model, skip_download, keep_media,
+           yt_extractor_args, cookies_file, cookies_from_browser, force_ipv4):
     """Analyze a video with AI vision and transcription"""
     
     # Check for API key
@@ -63,7 +68,11 @@ def analyze(video_input, output, interval, max_frames, audio_chunk_seconds,
             vision_model=vision_model,
             transcribe_model=transcribe_model,
             skip_download=skip_download,
-            keep_media=keep_media
+            keep_media=keep_media,
+            yt_extractor_args=yt_extractor_args,
+            cookies_file=cookies_file,
+            cookies_from_browser=cookies_from_browser,
+            force_ipv4=force_ipv4,
         )
         
         click.echo(click.style('✅ Analysis complete!', fg='green'))
